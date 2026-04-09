@@ -4,6 +4,8 @@ import { createInstrument } from '@/lib/actions';
 import { ProductionStatus, InstrumentStatus, PaymentInstallmentStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }

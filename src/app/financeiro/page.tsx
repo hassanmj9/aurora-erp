@@ -44,11 +44,46 @@ export default function FinanceiroPage() {
     const fetchData = async () => {
       try {
         const params = new URLSearchParams();
-        params.append("period", period);
+        params.append("date", period);
         const response = await fetch(`/api/financial?${params}`);
         if (response.ok) {
           const result = await response.json();
-          setData(result);
+          // Map API response to page expectations
+          setData({
+            periodo: period,
+            faturamento: parseFloat(result.totalIncome || 0),
+            custos: parseFloat(result.totalExpenses || 0),
+            lucroLiquido: parseFloat(result.netProfit || 0),
+            cambioAtual: 5.12, // This would come from an external API in production
+            entradas: result.entries
+              ?.filter((entry: any) => entry.type === 'ENTRADA')
+              .map((entry: any) => ({
+                id: entry.id,
+                data: entry.date,
+                descricao: entry.description,
+                categoria: entry.category,
+                tipo: 'ENTRADA' as const,
+                valor: parseFloat(entry.amountBRL || 0),
+                origem: entry.source,
+              })) || [],
+            saidas: result.entries
+              ?.filter((entry: any) => entry.type === 'SAIDA')
+              .map((entry: any) => ({
+                id: entry.id,
+                data: entry.date,
+                descricao: entry.description,
+                categoria: entry.category,
+                tipo: 'SAIDA' as const,
+                valor: parseFloat(entry.amountBRL || 0),
+              })) || [],
+            parcelasPendentes: result.pendingPayments?.map((payment: any) => ({
+              id: payment.id,
+              descricao: `Prod. Order ${payment.productionOrder?.code} - Parcela ${payment.installment}`,
+              valor: parseFloat(payment.amountBRL || 0),
+              vencimento: payment.dueDate,
+              status: payment.status,
+            })) || [],
+          });
         }
       } catch (error) {
         console.error("Erro ao buscar dados financeiros:", error);

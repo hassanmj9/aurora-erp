@@ -45,6 +45,8 @@ enum ModelType {
   WOOD_SERIES
   BOREALIS
   CELLO
+  GHOST
+  AURO
 }
 
 enum OrderStatus {

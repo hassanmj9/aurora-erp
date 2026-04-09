@@ -40,7 +40,29 @@ export default function EnviosPage() {
         const response = await fetch(`/api/shipments?${params}`);
         if (response.ok) {
           const result = await response.json();
-          setData(result);
+          // Map API response (shipments) to page expectations (envios)
+          const enviosMapped = result.shipments.map((shipment: any) => ({
+            id: shipment.id,
+            rastreamento: shipment.trackingNumber,
+            transportadora: shipment.carrier,
+            origem: shipment.origin,
+            cliente: shipment.customer?.name,
+            seriais: shipment.instruments?.map((inst: any) => inst.serial) || [],
+            status: shipment.status,
+            dataDespachado: shipment.createdAt,
+          }));
+
+          // Calculate stats
+          const pendentes = enviosMapped.filter((e: any) => e.status === 'ETIQUETA_CRIADA').length;
+          const emTransito = enviosMapped.filter((e: any) => e.status === 'EM_TRANSITO' || e.status === 'SAIU_PARA_ENTREGA').length;
+          const entreguesMes = enviosMapped.filter((e: any) => e.status === 'ENTREGUE').length;
+
+          setData({
+            envios: enviosMapped,
+            pendentes,
+            emTransito,
+            entreguesMes,
+          });
         }
       } catch (error) {
         console.error("Erro ao buscar envios:", error);

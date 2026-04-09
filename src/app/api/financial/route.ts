@@ -3,6 +3,8 @@ import prisma from '@/lib/db';
 import { FinancialType } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;

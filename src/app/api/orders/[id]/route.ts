@@ -3,6 +3,8 @@ import prisma from '@/lib/db';
 import { registerPayment } from '@/lib/actions';
 import { OrderStatus } from '@prisma/client';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }

@@ -21,6 +21,8 @@ export const SERIAL_MODEL_CODES: Record<ModelType, string> = {
   WOOD_SERIES: "3",
   BOREALIS: "4",
   CELLO: "5",
+  GHOST: "6",
+  AURO: "7",
 };
 
 export const SERIAL_COLOR_CODES: Record<string, string> = {

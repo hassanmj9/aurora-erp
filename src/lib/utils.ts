@@ -207,6 +207,8 @@ export function getModelTypeLabel(type: ModelType): string {
     WOOD_SERIES: "Wood Series",
     BOREALIS: "Borealis",
     CELLO: "Cello",
+    GHOST: "Ghost",
+    AURO: "Auro",
   };
   return labels[type] || type;
 }

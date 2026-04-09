@@ -3,12 +3,14 @@ import prisma from '@/lib/db';
 import { ProductionStatus, FinancialType, FinancialCategory } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status');
     const page = parseInt(searchParams.get('page') || '1');
-    const limit = parseInt(searchParams.get('limit') || '20');
+    const limit = parseInt(searchParams.get('limit') || '100');
 
     const skip = (page - 1) * limit;
 

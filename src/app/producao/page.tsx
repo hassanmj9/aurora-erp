@@ -44,7 +44,31 @@ export default function ProducaoPage() {
         const response = await fetch("/api/production");
         if (response.ok) {
           const result = await response.json();
-          setData(result);
+          // Map API response (orders) to page expectations (pedidos)
+          setData({
+            pedidos: result.orders.map((order: any) => ({
+              id: order.id,
+              code: order.code,
+              descricao: order.description,
+              status: order.status,
+              itens: order.items?.map((item: any) => `${item.quantity}x ${item.modelType} ${item.color}`).join(', ') || '',
+              custTotal: parseFloat(order.totalCostBRL),
+              pago: order.payments
+                ?.filter((p: any) => p.status === 'PAGO')
+                .reduce((sum: number, p: any) => sum + parseFloat(p.amountBRL || 0), 0) || 0,
+              faltaPagar: parseFloat(order.totalCostBRL) - (order.payments
+                ?.filter((p: any) => p.status === 'PAGO')
+                .reduce((sum: number, p: any) => sum + parseFloat(p.amountBRL || 0), 0) || 0),
+              pagamentos: order.payments?.map((payment: any) => ({
+                id: payment.id,
+                parcela: payment.installment,
+                descricao: payment.description,
+                valor: payment.amountBRL,
+                dataPagamento: payment.dueDate,
+                status: payment.status,
+              })) || [],
+            })),
+          });
         }
       } catch (error) {
         console.error("Erro ao buscar pedidos de produção:", error);

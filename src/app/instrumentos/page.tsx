@@ -24,7 +24,7 @@ interface Instrument {
 }
 
 interface InstrumentosData {
-  instrumentos: Instrument[];
+  instruments: Instrument[];
   total: number;
 }
 
@@ -103,7 +103,7 @@ export default function InstrumentosPage() {
   // Placeholder data for development
   const placeholderData: InstrumentosData = {
     total: 47,
-    instrumentos: [
+    instruments: [
       {
         serial: "A7VNA00114010216090",
         model: { type: "CLASSIC", color: "White" },
@@ -152,7 +152,7 @@ export default function InstrumentosPage() {
 
   const displayData = data || placeholderData;
 
-  const filteredInstrumentos = displayData.instrumentos.filter((inst) => {
+  const filteredInstrumentos = displayData.instruments.filter((inst) => {
     const matchesSearch =
       searchTerm === "" ||
       inst.serial.toLowerCase().includes(searchTerm.toLowerCase()) ||

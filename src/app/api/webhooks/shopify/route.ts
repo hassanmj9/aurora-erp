@@ -5,6 +5,8 @@ import { createOrderFromInvoice, registerPayment } from '@/lib/actions';
 import { OrderSource, OrderStatus, InstrumentStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Shopify Webhook Handler for Aurora Violins ERP
  *

@@ -81,7 +81,23 @@ export default function PedidosPage() {
         const response = await fetch(`/api/orders?${params}`);
         if (response.ok) {
           const result = await response.json();
-          setData(result);
+          // Map API response (orders) to page expectations (pedidos)
+          setData({
+            pedidos: result.orders.map((order: any) => ({
+              numero: order.orderNumber,
+              data: order.date,
+              cliente: order.customer?.name,
+              source: order.source,
+              seriais: order.instruments?.map((inst: any) => inst.serial) || [],
+              total: parseFloat(order.total || 0),
+              status: order.status,
+            })),
+            total: result.total,
+            faturamento: result.orders.reduce((sum: number, order: any) => sum + parseFloat(order.total || 0), 0),
+            ticketMedio: result.orders.length > 0
+              ? result.orders.reduce((sum: number, order: any) => sum + parseFloat(order.total || 0), 0) / result.orders.length
+              : 0,
+          });
         }
       } catch (error) {
         console.error("Erro ao buscar pedidos:", error);
