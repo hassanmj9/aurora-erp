@@ -1,0 +1,529 @@
+// =============================================================================
+// Aurora Violins ERP — Schema Serial-First
+// Cada instrumento é único. O serial é o eixo de tudo.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+// Ciclo de vida de um instrumento (do nascimento à eternidade)
+enum InstrumentStatus {
+  EM_PRODUCAO          // Pedido feito à fábrica, aguardando
+  PRODUZIDO            // Pronto na fábrica
+  EM_TRANSITO_ESTOQUE  // Saindo da fábrica → estoque (BR→EUA geralmente)
+  EM_ESTOQUE           // Disponível para venda
+  RESERVADO            // Cliente comprou, preparando envio
+  EM_TRANSITO_CLIENTE  // Despachado com tracking
+  ENTREGUE             // Na mão do cliente
+  EM_GARANTIA          // Retornou para reparo/troca
+  DEVOLVIDO            // Retornado definitivamente
+  PERDIDO              // Extraviado (carrier perdeu)
+}
+
+enum InstrumentLocation {
+  FABRICA       // Brazolim, Brasil
+  EM_TRANSITO   // Entre locais
+  CASA_EUA      // Casa/escritório nos EUA
+  SAM_ASH       // Loja Sam Ash
+  OUTRO         // Qualquer outro local
+}
+
+enum ModelType {
+  CLASSIC
+  SILHOUETTE
+  WOOD_SERIES
+  BOREALIS
+  CELLO
+}
+
+enum OrderStatus {
+  RASCUNHO           // Invoice ainda não enviada
+  AGUARDANDO_PAGTO   // Invoice enviada, aguardando
+  PAGO               // Pagamento confirmado
+  PREPARANDO         // Separando instrumento(s)
+  ENVIADO            // Despachado
+  ENTREGUE           // Confirmado entregue
+  CANCELADO
+  REEMBOLSADO
+}
+
+enum OrderSource {
+  SHOPIFY        // Venda pelo site
+  INVOICE_PAYPAL // Invoice manual PayPal
+  INVOICE_STRIPE // Invoice manual Stripe
+  INVOICE_AFFIRM // Invoice manual Affirm
+  WIRE_TRANSFER  // Transferência bancária
+  OUTRO
+}
+
+enum ShipmentStatus {
+  ETIQUETA_CRIADA
+  COLETADO
+  EM_TRANSITO
+  SAIU_PARA_ENTREGA
+  ENTREGUE
+  EXCECAO
+  DEVOLVIDO
+}
+
+enum ShipmentCarrier {
+  DHL
+  UPS
+  USPS
+  CORREIOS
+  FEDEX
+  OUTRO
+}
+
+enum ShipmentOrigin {
+  EUA      // Sai dos EUA
+  BRASIL   // Sai direto da fábrica no Brasil
+}
+
+enum ProductionStatus {
+  ORCAMENTO       // Cotando com a fábrica
+  PEDIDO_FEITO    // Pedido confirmado
+  EM_PRODUCAO     // Fábrica produzindo
+  PARCIAL_PRONTO  // Parte do lote pronta
+  PRONTO          // Tudo pronto
+  DESPACHADO      // Saiu da fábrica
+  RECEBIDO        // Chegou no destino
+}
+
+enum PaymentInstallmentStatus {
+  PENDENTE
+  PAGO
+  VENCIDO
+  CANCELADO
+}
+
+enum FinancialType {
+  ENTRADA   // Dinheiro entrando
+  SAIDA     // Dinheiro saindo
+}
+
+enum FinancialCategory {
+  VENDA
+  CUSTO_PRODUCAO
+  FRETE_ENVIO
+  FRETE_ESTOQUE    // Frete fábrica→estoque
+  TAXA_SHOPIFY
+  TAXA_PAYPAL
+  TAXA_STRIPE
+  TAXA_AFFIRM
+  PUBLICIDADE
+  ASSINATURA       // Shopify plan, domínio, etc.
+  TAXA_SERVICO     // Wise fees, etc.
+  TAXA_TRANSFERENCIA
+  IMPOSTO
+  OUTRO
+}
+
+// =============================================================================
+// MODELOS CORE
+// =============================================================================
+
+/// Catálogo de modelos — template, não o instrumento físico
+model Model {
+  id          String     @id @default(cuid())
+  type        ModelType
+  name        String     // "Classic 4-String White"
+  strings     Int        // 4 ou 5
+  color       String     // "White", "Black", etc.
+  colorCode   String     // "01", "02" — para gerar serial
+  modelCode   String     // "1", "2" — para gerar serial
+  basePrice   Decimal    @db.Decimal(10, 2) // Preço de tabela USD
+  costPrice   Decimal?   @db.Decimal(10, 2) // Custo de produção estimado
+  imageUrl    String?
+  active      Boolean    @default(true)
+  shopifyProductId  String?  @unique
+  shopifyVariantId  String?  @unique
+
+  instruments Instrument[]
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([type, strings, color])
+  @@map("models")
+}
+
+/// O CORAÇÃO DO SISTEMA — cada instrumento físico único
+model Instrument {
+  id          String           @id @default(cuid())
+  serial      String           @unique // A7VNA00114010216090 1
+
+  // Identidade
+  modelId     String
+  model       Model            @relation(fields: [modelId], references: [id])
+  modelType   ModelType        // Denormalizado pra queries rápidas
+  strings     Int
+  color       String
+  series      String           @default("01")
+  year        Int              // Ano de fabricação (YY)
+  month       Int              // Mês de fabricação (MM)
+
+  // Estado atual
+  status      InstrumentStatus @default(EM_PRODUCAO)
+  location    InstrumentLocation @default(FABRICA)
+  locationNote String?         // "Prateleira 3", "Em trânsito DHL 6991459532"
+
+  // Vínculos
+  productionOrderId String?
+  productionOrder   ProductionOrder? @relation(fields: [productionOrderId], references: [id])
+
+  orderId     String?
+  order       Order?           @relation(fields: [orderId], references: [id])
+
+  customerId  String?
+  customer    Customer?        @relation(fields: [customerId], references: [id])
+
+  shipmentId  String?
+  shipment    Shipment?        @relation(fields: [shipmentId], references: [id])
+
+  // Custos reais deste instrumento específico
+  costPrice   Decimal?         @db.Decimal(10, 2) // Custo real de produção
+  salePrice   Decimal?         @db.Decimal(10, 2) // Preço pelo qual foi vendido
+
+  // Notas e histórico
+  notes       String?
+  history     InstrumentEvent[]
+
+  // Certificado / página pública
+  certificateEnabled Boolean  @default(true)
+  ownerDisplayName   String?  // Nome que aparece no certificado (se autorizado)
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([status])
+  @@index([modelType, color])
+  @@index([location])
+  @@index([orderId])
+  @@index([customerId])
+  @@map("instruments")
+}
+
+/// Log de tudo que acontece com um instrumento
+model InstrumentEvent {
+  id           String   @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  fromStatus   InstrumentStatus?
+  toStatus     InstrumentStatus
+  description  String   // "Produzido na fábrica", "Vendido para John Doe", etc.
+  metadata     Json?    // Dados extras (tracking number, order id, etc.)
+
+  createdAt    DateTime @default(now())
+
+  @@index([instrumentId, createdAt])
+  @@map("instrument_events")
+}
+
+// =============================================================================
+// CLIENTES
+// =============================================================================
+
+model Customer {
+  id          String   @id @default(cuid())
+  name        String
+  email       String?  @unique
+  phone       String?
+  whatsapp    String?
+  address     String?
+  city        String?
+  state       String?
+  country     String?
+  zipCode     String?
+
+  // CRM
+  kommoId     String?  @unique  // ID no Kommo CRM
+  kommoLeadId String?           // Lead ID no Kommo
+  source      String?           // "shopify", "whatsapp", "instagram", etc.
+
+  // Histórico
+  totalSpent  Decimal  @default(0) @db.Decimal(12, 2)
+  orderCount  Int      @default(0)
+  notes       String?
+
+  instruments Instrument[]
+  orders      Order[]
+  shipments   Shipment[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("customers")
+}
+
+// =============================================================================
+// PEDIDOS / VENDAS
+// =============================================================================
+
+model Order {
+  id             String      @id @default(cuid())
+  orderNumber    String      @unique  // AV-202604-001
+  date           DateTime    @default(now())
+
+  // Origem
+  source         OrderSource
+  shopifyOrderId String?     @unique
+  shopifyOrderNumber String? // #1042 (número visível no Shopify)
+  externalInvoiceId  String? // PayPal invoice ID, Stripe invoice ID, etc.
+
+  // Cliente
+  customerId     String
+  customer       Customer    @relation(fields: [customerId], references: [id])
+
+  // Instrumentos neste pedido (1 ou mais)
+  instruments    Instrument[]
+
+  // Valores
+  subtotal       Decimal     @db.Decimal(10, 2) // Soma dos preços
+  shippingCharge Decimal     @default(0) @db.Decimal(10, 2) // Cobrado do cliente
+  discount       Decimal     @default(0) @db.Decimal(10, 2)
+  total          Decimal     @db.Decimal(10, 2) // subtotal + shipping - discount
+
+  // Taxas (deduzidas)
+  feeShopify     Decimal     @default(0) @db.Decimal(10, 2)
+  feePaypal      Decimal     @default(0) @db.Decimal(10, 2)
+  feeStripe      Decimal     @default(0) @db.Decimal(10, 2)
+  feeAffirm      Decimal     @default(0) @db.Decimal(10, 2)
+  extraHandling  Decimal     @default(0) @db.Decimal(10, 2)
+
+  // Calculados
+  totalFees      Decimal     @default(0) @db.Decimal(10, 2) // Soma de todas as taxas
+  income         Decimal     @default(0) @db.Decimal(10, 2) // total - totalFees
+  shippingCost   Decimal     @default(0) @db.Decimal(10, 2) // Custo real do frete (não o cobrado)
+  productionCost Decimal     @default(0) @db.Decimal(10, 2) // Soma dos custos dos instrumentos
+  profit         Decimal     @default(0) @db.Decimal(10, 2) // income - shippingCost - productionCost
+
+  // Câmbio
+  exchangeRate   Decimal?    @db.Decimal(8, 4) // USD→BRL do dia
+  totalBRL       Decimal?    @db.Decimal(12, 2)
+  profitBRL      Decimal?    @db.Decimal(12, 2)
+
+  // Status
+  status         OrderStatus @default(RASCUNHO)
+  paidAt         DateTime?
+  notes          String?
+
+  // Relações
+  shipments      Shipment[]
+  financials     Financial[]
+
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([status])
+  @@index([date])
+  @@index([customerId])
+  @@map("orders")
+}
+
+// =============================================================================
+// ENVIOS / SHIPPING
+// =============================================================================
+
+model Shipment {
+  id             String         @id @default(cuid())
+
+  // Vínculo
+  orderId        String
+  order          Order          @relation(fields: [orderId], references: [id])
+  customerId     String
+  customer       Customer       @relation(fields: [customerId], references: [id])
+  instruments    Instrument[]   // Quais seriais estão neste envio
+
+  // Carrier
+  carrier        ShipmentCarrier
+  trackingNumber String?
+  awb            String?        // DHL Air Waybill
+  labelUrl       String?
+
+  // Origem/Destino
+  origin         ShipmentOrigin
+  originAddress  String?
+  destName       String
+  destAddress    String?
+  destCity       String?
+  destCountry    String?
+
+  // Detalhes
+  weight         Decimal?       @db.Decimal(6, 2) // kg
+  status         ShipmentStatus @default(ETIQUETA_CRIADA)
+
+  // Custos
+  shippingCost   Decimal?       @db.Decimal(10, 2) // Custo real pago ao carrier
+  costBRL        Decimal?       @db.Decimal(10, 2)
+
+  // Datas
+  shippedAt      DateTime?
+  estimatedDelivery DateTime?
+  deliveredAt    DateTime?
+
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([status])
+  @@index([trackingNumber])
+  @@index([orderId])
+  @@map("shipments")
+}
+
+// =============================================================================
+// PRODUÇÃO (Pedidos à Fábrica)
+// =============================================================================
+
+/// Um pedido de lote à fábrica (ex: "Pedido A7")
+model ProductionOrder {
+  id           String           @id @default(cuid())
+  code         String           @unique // "A7", "A8", etc.
+  description  String?          // "Lote março 2026 — 8 violinos"
+
+  // Itens planejados (o que foi pedido)
+  items        ProductionItem[]
+
+  // Instrumentos gerados (os seriais reais criados)
+  instruments  Instrument[]
+
+  // Pagamentos / parcelas
+  payments     ProductionPayment[]
+
+  // Custos
+  totalCostBRL Decimal          @default(0) @db.Decimal(12, 2)
+  totalCostUSD Decimal          @default(0) @db.Decimal(12, 2)
+  totalPaidBRL Decimal          @default(0) @db.Decimal(12, 2)
+  remainingBRL Decimal          @default(0) @db.Decimal(12, 2)
+
+  // Status
+  status       ProductionStatus @default(ORCAMENTO)
+  orderedAt    DateTime?        // Data do pedido confirmado
+  estimatedReady DateTime?      // Previsão de entrega da fábrica
+  readyAt      DateTime?        // Quando ficou pronto
+  receivedAt   DateTime?        // Quando chegou no estoque
+
+  notes        String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  financials   Financial[]
+
+  @@map("production_orders")
+}
+
+/// Item de um pedido de produção (ex: "3x Classic 4str White")
+model ProductionItem {
+  id                String          @id @default(cuid())
+  productionOrderId String
+  productionOrder   ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  modelType         ModelType
+  strings           Int
+  color             String
+  quantity          Int
+  unitCost          Decimal?        @db.Decimal(10, 2) // Custo unitário
+  totalCost         Decimal?        @db.Decimal(10, 2) // quantity × unitCost
+  notes             String?
+
+  createdAt         DateTime        @default(now())
+
+  @@map("production_items")
+}
+
+/// Parcela de pagamento à fábrica
+model ProductionPayment {
+  id                String                   @id @default(cuid())
+  productionOrderId String
+  productionOrder   ProductionOrder          @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  installment       Int                      // 1, 2, 3, 4...
+  description       String?                  // "Parcela 1/4", "20% entrada"
+  amountBRL         Decimal                  @db.Decimal(10, 2)
+  amountUSD         Decimal?                 @db.Decimal(10, 2)
+  exchangeRate      Decimal?                 @db.Decimal(8, 4)
+
+  dueDate           DateTime
+  paidDate          DateTime?
+  status            PaymentInstallmentStatus @default(PENDENTE)
+
+  // Como foi pago
+  paymentMethod     String?                  // "Wise", "PIX", "Transferência"
+  paymentReference  String?                  // Nº da transação Wise, etc.
+
+  notes             String?
+  createdAt         DateTime                 @default(now())
+
+  @@index([status, dueDate])
+  @@map("production_payments")
+}
+
+// =============================================================================
+// FINANCEIRO
+// =============================================================================
+
+model Financial {
+  id              String            @id @default(cuid())
+  date            DateTime          @default(now())
+  type            FinancialType
+  category        FinancialCategory
+  description     String
+
+  amountUSD       Decimal?          @db.Decimal(12, 2)
+  amountBRL       Decimal           @db.Decimal(12, 2)
+  exchangeRate    Decimal?          @db.Decimal(8, 4)
+
+  // Vínculos opcionais (pra saber de onde veio)
+  orderId             String?
+  order               Order?           @relation(fields: [orderId], references: [id])
+  productionOrderId   String?
+  productionOrder     ProductionOrder? @relation(fields: [productionOrderId], references: [id])
+
+  createdAt       DateTime          @default(now())
+
+  @@index([date])
+  @@index([type, category])
+  @@index([orderId])
+  @@map("financials")
+}
+
+// =============================================================================
+// CÂMBIO
+// =============================================================================
+
+model ExchangeRate {
+  id        String   @id @default(cuid())
+  date      DateTime @unique @db.Date
+  usdToBrl  Decimal  @db.Decimal(8, 4)
+  source    String   @default("BCB") // Banco Central do Brasil
+
+  createdAt DateTime @default(now())
+
+  @@map("exchange_rates")
+}
+
+// =============================================================================
+// CONFIGURAÇÕES
+// =============================================================================
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
