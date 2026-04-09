@@ -172,8 +172,8 @@ export default function InstrumentosPage() {
         title="Instrumentos"
         subtitle={`${displayData.total} instrumentos encontrados`}
         action={{
-          label: "Novo Instrumento",
-          href: "/instrumentos/novo",
+          label: "Atribuir Serial",
+          href: "/instrumentos/atribuir",
           icon: <Plus />,
         }}
       />

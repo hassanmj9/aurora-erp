@@ -103,6 +103,14 @@ enum ProductionStatus {
   RECEBIDO        // Chegou no destino
 }
 
+enum ProductionStage {
+  MARCENARIA    // Woodwork - cutting, preparation
+  PINTURA       // Painting
+  MONTAGEM      // Assembly and testing
+  EMBALAGEM     // Packaging
+  PRONTO        // Ready for pickup/shipping
+}
+
 enum PaymentInstallmentStatus {
   PENDENTE
   PAGO
@@ -369,6 +377,7 @@ model Shipment {
 
   // Custos
   shippingCost   Decimal?       @db.Decimal(10, 2) // Custo real pago ao carrier
+  actualCost     Decimal?       @db.Decimal(10, 2) // Alias para shippingCost
   costBRL        Decimal?       @db.Decimal(10, 2)
 
   // Datas
@@ -414,6 +423,7 @@ model ProductionOrder {
   // Status
   status       ProductionStatus @default(ORCAMENTO)
   orderedAt    DateTime?        // Data do pedido confirmado
+  estimatedDelivery DateTime?   // Auto-calculated: orderDate + 60 days (violins) or + 90 days (cellos)
   estimatedReady DateTime?      // Previsão de entrega da fábrica
   readyAt      DateTime?        // Quando ficou pronto
   receivedAt   DateTime?        // Quando chegou no estoque
@@ -439,6 +449,7 @@ model ProductionItem {
   quantity          Int
   unitCost          Decimal?        @db.Decimal(10, 2) // Custo unitário
   totalCost         Decimal?        @db.Decimal(10, 2) // quantity × unitCost
+  productionStage   ProductionStage? // Current production stage
   notes             String?
 
   createdAt         DateTime        @default(now())

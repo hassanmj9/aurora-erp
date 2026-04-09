@@ -586,16 +586,6 @@ async function migrateProductionOrders(modelMap: Map<string, string>) {
   const prodPath = path.join(process.cwd(), "prisma", "data", "production-full.json");
   const prodData = JSON.parse(fs.readFileSync(prodPath, "utf-8"));
 
-  // Fetch all instruments for linking
-  const allInstruments = await prisma.instrument.findMany();
-  const instrumentsBySeriesPrefix = new Map<string, typeof allInstruments>();
-  for (const inst of allInstruments) {
-    if (!instrumentsBySeriesPrefix.has(inst.series)) {
-      instrumentsBySeriesPrefix.set(inst.series, []);
-    }
-    instrumentsBySeriesPrefix.get(inst.series)!.push(inst);
-  }
-
   let count = 0;
 
   for (const order of prodData) {
@@ -611,14 +601,38 @@ async function migrateProductionOrders(modelMap: Map<string, string>) {
       totalCostBRL = order.p20 * 5;
     }
 
-    // Create production order
+    // Determine production order status based on filled dates (before creating)
+    const dates = order.dates || {};
+    const pedidoKey = isOldFormat ? "Pedido" : "Pedido 20%";
+    const entregaKey = isOldFormat ? "Entrega" : "Entrega 20%";
+    const pedidoDate = parseBrazilianDate(dates[pedidoKey]?.date || "");
+    const entregaDate = parseBrazilianDate(dates[entregaKey]?.date || "");
+    const parcela1Date = parseBrazilianDate(dates["Parcela 1"]?.date || "");
+    const parcela2Date = parseBrazilianDate(dates["Parcela 2"]?.date || "");
+    const parcela3Date = parseBrazilianDate(dates["Parcela 3"]?.date || "");
+    const parcela4Date = parseBrazilianDate(dates["Parcela 4"]?.date || "");
+
+    const baseDueDate = pedidoDate || new Date();
+
+    const filledDates = [pedidoDate, entregaDate, parcela1Date, parcela2Date, parcela3Date, parcela4Date].filter(d => d !== null);
+    let orderStatus: ProductionStatus = ProductionStatus.ORCAMENTO;
+
+    if (filledDates.length >= 6) {
+      orderStatus = ProductionStatus.RECEBIDO;
+    } else if (filledDates.length >= 2) {
+      orderStatus = ProductionStatus.EM_PRODUCAO;
+    } else if (filledDates.length === 1) {
+      orderStatus = ProductionStatus.PEDIDO_FEITO;
+    }
+
+    // Create production order with correct status
     const prodOrder = await prisma.productionOrder.create({
       data: {
         code: orderCode,
         description: `Production Order ${orderCode}`,
         totalCostBRL: new Prisma.Decimal(totalCostBRL),
         totalCostUSD: new Prisma.Decimal(0),
-        status: ProductionStatus.PEDIDO_FEITO,
+        status: orderStatus,
       },
     });
 
@@ -642,37 +656,6 @@ async function migrateProductionOrders(modelMap: Map<string, string>) {
     }
 
     // Create production payments (6 payment structure)
-    const dates = order.dates || {};
-    // Old format uses "Pedido"/"Entrega", new format uses "Pedido 20%"/"Entrega 20%"
-    const pedidoKey = isOldFormat ? "Pedido" : "Pedido 20%";
-    const entregaKey = isOldFormat ? "Entrega" : "Entrega 20%";
-    const pedidoDate = parseBrazilianDate(dates[pedidoKey]?.date || "");
-    const entregaDate = parseBrazilianDate(dates[entregaKey]?.date || "");
-    const parcela1Date = parseBrazilianDate(dates["Parcela 1"]?.date || "");
-    const parcela2Date = parseBrazilianDate(dates["Parcela 2"]?.date || "");
-    const parcela3Date = parseBrazilianDate(dates["Parcela 3"]?.date || "");
-    const parcela4Date = parseBrazilianDate(dates["Parcela 4"]?.date || "");
-
-    const baseDueDate = pedidoDate || new Date();
-
-    // Determine production order status based on filled dates
-    const filledDates = [pedidoDate, entregaDate, parcela1Date, parcela2Date, parcela3Date, parcela4Date].filter(d => d !== null);
-    let orderStatus: ProductionStatus = ProductionStatus.ORCAMENTO;
-
-    if (filledDates.length >= 6) {
-      orderStatus = ProductionStatus.RECEBIDO;
-    } else if (filledDates.length >= 2) {
-      orderStatus = ProductionStatus.EM_PRODUCAO;
-    } else if (filledDates.length === 1) {
-      orderStatus = ProductionStatus.PEDIDO_FEITO;
-    }
-
-    // Update the production order with the correct status
-    await prisma.productionOrder.update({
-      where: { id: prodOrder.id },
-      data: { status: orderStatus },
-    });
-
     const payments = [
       {
         installment: 1,
@@ -737,6 +720,152 @@ async function migrateProductionOrders(modelMap: Map<string, string>) {
 }
 
 // ============================================================================
+// CREATE INSTRUMENTS FOR RECEBIDO ORDERS
+// ============================================================================
+
+async function createInstrumentsForRecebidoOrders() {
+  console.log("\n=== CREATING INSTRUMENTS FOR RECEBIDO ORDERS ===");
+
+  // Helper function to get next sequence number (from serial.ts logic)
+  async function getNextSequenceNumberForModel(modelType: ModelType): Promise<string> {
+    const latest = await prisma.instrument.findFirst({
+      where: { modelType },
+      orderBy: { serial: "desc" },
+      select: { serial: true },
+    });
+
+    if (!latest) {
+      return "001";
+    }
+
+    // Parse the serial to get the sequence (positions 5-8)
+    // Format: A7VNA[SEQ][MODEL][STRINGS][COLOR][SERIES][YY][MM][BUYER]
+    try {
+      const seqStr = latest.serial.substring(5, 8); // Extract 3-digit sequence
+      const currentSeq = parseInt(seqStr);
+      const nextSeq = currentSeq + 1;
+      return String(nextSeq).padStart(3, "0");
+    } catch {
+      return "001";
+    }
+  }
+
+  // Helper function to generate serial (from serial.ts logic)
+  function generateSerialForRecebido(params: {
+    sequence: string; // "001", "002", etc.
+    model: ModelType;
+    strings: number;
+    color: string; // color code "01", "02"
+  }): string {
+    const modelCodes: Record<ModelType, string> = {
+      CLASSIC: "1",
+      SILHOUETTE: "2",
+      WOOD_SERIES: "3",
+      BOREALIS: "4",
+      CELLO: "5",
+      GHOST: "6",
+      AURO: "7",
+    };
+
+    const modelCode = modelCodes[params.model] || "1";
+    const strings = String(params.strings);
+    const color = params.color;
+    const series = "01";
+    const year = String(new Date().getFullYear() % 100).padStart(2, "0");
+    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+    const buyer = "01";
+
+    return `A7VNA${params.sequence}${modelCode}${strings}${color}${series}${year}${month}${buyer}`;
+  }
+
+  // Find all RECEBIDO production orders
+  const recebidoOrders = await prisma.productionOrder.findMany({
+    where: {
+      status: ProductionStatus.RECEBIDO,
+    },
+    include: {
+      items: true,
+    },
+  });
+
+  let created = 0;
+
+  for (const order of recebidoOrders) {
+    for (const item of order.items) {
+      // For each item in the order, create the specified quantity of instruments
+      for (let i = 0; i < item.quantity; i++) {
+        // Get the next sequence number for this model type
+        const sequenceNum = await getNextSequenceNumberForModel(item.modelType);
+
+        // Generate the serial
+        const colorCode = nameToColorCode(item.color);
+        const serial = generateSerialForRecebido({
+          sequence: sequenceNum,
+          model: item.modelType,
+          strings: item.strings,
+          color: colorCode,
+        });
+
+        // Find the model for this instrument
+        const model = await prisma.model.findFirst({
+          where: {
+            type: item.modelType,
+            strings: item.strings,
+            color: item.color,
+          },
+        });
+
+        if (!model) {
+          console.warn(`  No model found for ${item.modelType} ${item.strings}str ${item.color}`);
+          continue;
+        }
+
+        // Create the instrument (with collision retry)
+        let serialToUse = serial;
+        let retries = 0;
+        while (retries < 20) {
+          const exists = await prisma.instrument.findUnique({ where: { serial: serialToUse } });
+          if (!exists) break;
+          retries++;
+          const newSeq = String(parseInt(sequenceNum) + retries + 300).padStart(3, "0");
+          serialToUse = generateSerialForRecebido({
+            sequence: newSeq,
+            model: item.modelType,
+            strings: item.strings,
+            color: colorCode,
+          });
+        }
+        if (retries >= 20) {
+          console.warn(`  Could not find unique serial for ${item.modelType} ${item.color}, skipping`);
+          continue;
+        }
+
+        await prisma.instrument.create({
+          data: {
+            serial: serialToUse,
+            modelId: model.id,
+            modelType: item.modelType,
+            strings: item.strings,
+            color: item.color,
+            series: "01",
+            year: new Date().getFullYear(),
+            month: new Date().getMonth() + 1,
+            status: InstrumentStatus.EM_ESTOQUE,
+            location: InstrumentLocation.CASA_EUA,
+            productionOrderId: order.id,
+            costPrice: item.unitCost || undefined,
+          },
+        });
+
+        created++;
+      }
+    }
+  }
+
+  console.log(`Created ${created} instruments for RECEBIDO orders.`);
+}
+
+// ============================================================================
 // PRODUCTION-INSTRUMENT LINKING
 // ============================================================================
 
@@ -751,11 +880,11 @@ async function linkInstrumentsToProductionOrders() {
     },
   });
 
-  // Find active production orders
+  // Find active production orders (PEDIDO_FEITO, EM_PRODUCAO, and RECEBIDO)
   const activeProductionOrders = await prisma.productionOrder.findMany({
     where: {
       status: {
-        in: [ProductionStatus.PEDIDO_FEITO, ProductionStatus.EM_PRODUCAO],
+        in: [ProductionStatus.PEDIDO_FEITO, ProductionStatus.EM_PRODUCAO, ProductionStatus.RECEBIDO],
       },
     },
     include: {
@@ -777,13 +906,16 @@ async function linkInstrumentsToProductionOrders() {
     );
 
     if (matchingOrder) {
-      // Link the instrument to the production order
-      // (if the schema supports this relationship)
+      // Actually update the database to link the instrument
+      await prisma.instrument.update({
+        where: { id: instrument.id },
+        data: { productionOrderId: matchingOrder.id },
+      });
       linked++;
     }
   }
 
-  console.log(`Identified ${linked} instruments potentially linked to production orders.`);
+  console.log(`Linked ${linked} instruments to production orders.`);
 }
 
 // ============================================================================
@@ -1219,13 +1351,28 @@ async function main() {
     // 7. Migrate breakeven financial entries
     await migrateBreakeven();
 
-    // 8. Link instruments to production orders
-    await linkInstrumentsToProductionOrders();
+    // 8. Create instruments for RECEBIDO orders
+    try {
+      await createInstrumentsForRecebidoOrders();
+    } catch (e) {
+      console.warn("Warning: createInstrumentsForRecebidoOrders failed:", e);
+    }
 
-    // 9. Link delivered instruments to customers
-    await linkInstrumentsToCustomers(instrumentsByOwner);
+    // 9. Link instruments to production orders
+    try {
+      await linkInstrumentsToProductionOrders();
+    } catch (e) {
+      console.warn("Warning: linkInstrumentsToProductionOrders failed:", e);
+    }
 
-    // 10. Summary
+    // 10. Link delivered instruments to customers
+    try {
+      await linkInstrumentsToCustomers(instrumentsByOwner);
+    } catch (e) {
+      console.warn("Warning: linkInstrumentsToCustomers failed:", e);
+    }
+
+    // 11. Summary
     console.log("\n=== MIGRATION SUMMARY ===");
     const modelCount = await prisma.model.count();
     const instrumentCount = await prisma.instrument.count();

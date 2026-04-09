@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
       where,
       include: {
         model: {
-          select: { id: true, type: true, name: true, color: true, strings: true },
+          select: { id: true, type: true, name: true, color: true, strings: true, basePrice: true },
         },
         customer: {
           select: { id: true, name: true, email: true },

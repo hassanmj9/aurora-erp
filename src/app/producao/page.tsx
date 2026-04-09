@@ -221,7 +221,7 @@ export default function ProducaoPage() {
         title="Produção"
         subtitle={`${displayData.pedidos.length} pedidos de produção`}
         action={{
-          label: "Novo Pedido de Produção",
+          label: "Novo Pedido",
           href: "/producao/novo",
           icon: <Plus />,
         }}

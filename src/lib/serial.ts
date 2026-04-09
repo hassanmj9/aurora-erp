@@ -38,6 +38,8 @@ export const SERIAL_COLOR_CODES: Record<string, string> = {
   Amethyst: "10",
   Blue: "11",
   RedBordeaux: "12",
+  Carbon: "13",
+  Sapphire: "14",
   Custom: "55",
 };
 
