@@ -235,35 +235,55 @@ export default function ProducaoPage() {
             description="Comece criando um novo pedido"
           />
         ) : (
-          displayData.pedidos.map((order) => (
+          displayData.pedidos.map((order) => {
+            const totalPaymentsPaid = order.pagamentos.filter(
+              (p) => p.status === "PAGO"
+            ).length;
+            const totalPayments = order.pagamentos.length;
+            const paymentProgress =
+              totalPayments > 0
+                ? `${totalPaymentsPaid}/${totalPayments} pagos`
+                : "—";
+
+            return (
             <div
               key={order.id}
-              className="bg-white rounded-lg border border-gray-200 shadow-sm"
+              className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow"
             >
               {/* Header */}
               <div
-                onClick={() =>
-                  setExpandedId(expandedId === order.id ? null : order.id)
-                }
+                onClick={() => {
+                  setExpandedId(expandedId === order.id ? null : order.id);
+                }}
                 className="p-6 cursor-pointer hover:bg-gray-50 transition-colors"
               >
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex-1">
-                    <h3 className="text-lg font-bold text-gray-900">
-                      Pedido {order.code}
-                    </h3>
-                    <p className="text-sm text-gray-600 mt-1">
-                      {order.descricao}
-                    </p>
+                <a
+                  href={`/producao/${order.id}`}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.location.href = `/producao/${order.id}`;
+                  }}
+                  className="block"
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-gray-900 text-[#e94560]">
+                        Pedido {order.code}
+                      </h3>
+                      <p className="text-sm text-gray-600 mt-1">
+                        {order.descricao}
+                      </p>
+                    </div>
+                    <StatusBadge
+                      label={statusLabels[order.status]}
+                      variant={statusVariants[order.status]}
+                    />
                   </div>
-                  <StatusBadge
-                    label={statusLabels[order.status]}
-                    variant={statusVariants[order.status]}
-                  />
-                </div>
+                </a>
 
                 {/* Summary */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
                   <div>
                     <p className="text-xs text-gray-600">Itens</p>
                     <p className="font-semibold text-gray-900">
@@ -295,23 +315,35 @@ export default function ProducaoPage() {
                       {formatCurrency(order.faltaPagar, "USD")}
                     </p>
                   </div>
+                  <div>
+                    <p className="text-xs text-gray-600">Progresso Pagto</p>
+                    <p className="font-semibold text-gray-900">
+                      {paymentProgress}
+                    </p>
+                  </div>
                 </div>
               </div>
 
               {/* Expanded Details */}
               {expandedId === order.id && (
-                <div className="border-t px-6 py-6 bg-gray-50">
+                <div
+                  className="border-t px-6 py-6 bg-gray-50"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                  }}
+                >
                   <h4 className="font-semibold text-gray-900 mb-4">Parcelas</h4>
                   <div className="space-y-3">
                     {order.pagamentos.map((payment) => (
                       <div
                         key={payment.id}
                         className={cn(
-                          "p-4 rounded-lg border",
+                          "p-4 rounded-lg border cursor-default",
                           payment.status === "VENCIDO"
                             ? "border-red-300 bg-red-50"
                             : "border-gray-200 bg-white"
                         )}
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
@@ -349,27 +381,55 @@ export default function ProducaoPage() {
                 </div>
               )}
             </div>
-          ))
+            );
+          })
         )}
       </div>
 
       {/* Upcoming Payments Alert */}
-      <div className="bg-white rounded-lg border border-amber-200 bg-amber-50 shadow-sm p-6">
-        <h3 className="font-bold text-amber-900 mb-4 flex items-center gap-2">
-          <AlertCircle size={20} />
-          Próximas Parcelas Vencendo
-        </h3>
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between text-amber-900">
-            <span>Pedido A8 - Parcela 2 (Venceu em 10/04)</span>
-            <span className="font-bold">{formatCurrency(19200, "USD")}</span>
-          </div>
-          <div className="flex justify-between text-amber-900">
-            <span>Pedido A9 - Parcela 1 (Vence em 20/04)</span>
-            <span className="font-bold">{formatCurrency(6960, "USD")}</span>
+      {displayData.pedidos.some(
+        (order) =>
+          order.pagamentos.filter(
+            (p) => p.status === "VENCIDO" || p.status === "PENDENTE"
+          ).length > 0
+      ) && (
+        <div className="bg-white rounded-lg border border-amber-200 bg-amber-50 shadow-sm p-6">
+          <h3 className="font-bold text-amber-900 mb-4 flex items-center gap-2">
+            <AlertCircle size={20} />
+            Próximas Parcelas Vencendo
+          </h3>
+          <div className="space-y-2 text-sm">
+            {displayData.pedidos
+              .flatMap((order) =>
+                order.pagamentos
+                  .filter(
+                    (p) => p.status === "VENCIDO" || p.status === "PENDENTE"
+                  )
+                  .map((p) => ({
+                    ...p,
+                    orderCode: order.code,
+                  }))
+              )
+              .slice(0, 5)
+              .map((payment) => (
+                <div
+                  key={`${payment.orderCode}-${payment.parcela}`}
+                  className="flex justify-between text-amber-900"
+                >
+                  <span>
+                    Pedido {payment.orderCode} - Parcela {payment.parcela}
+                    {payment.status === "VENCIDO"
+                      ? ` (Venceu em ${formatDate(payment.dataPagamento)})`
+                      : ` (Vence em ${formatDate(payment.dataPagamento)})`}
+                  </span>
+                  <span className="font-bold">
+                    {formatCurrency(payment.valor, "USD")}
+                  </span>
+                </div>
+              ))}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

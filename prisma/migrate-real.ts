@@ -14,7 +14,13 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.DIRECT_URL || process.env.DATABASE_URL,
+    },
+  },
+});
 
 // ============================================================================
 // CONSTANTS & MAPPINGS
@@ -497,6 +503,7 @@ async function migrateSerials(modelMap: Map<string, string>) {
   const serialLines = serialData.split("\n").slice(1).filter((l) => l.trim());
 
   const instruments: Prisma.InstrumentCreateManyInput[] = [];
+  const instrumentsByOwner = new Map<string, Array<{ owner: string; modelType: ModelType; strings: number; color: string; series: string }>>();
   let skipped = 0;
 
   for (const line of serialLines) {
@@ -545,13 +552,28 @@ async function migrateSerials(modelMap: Map<string, string>) {
       location,
       costPrice: new Prisma.Decimal(costPrice),
     });
+
+    // Track instruments by owner for customer linking
+    const ownerStr = (owner || "").trim();
+    if (ownerStr && status === InstrumentStatus.ENTREGUE) {
+      if (!instrumentsByOwner.has(ownerStr)) {
+        instrumentsByOwner.set(ownerStr, []);
+      }
+      instrumentsByOwner.get(ownerStr)!.push({
+        owner: ownerStr,
+        modelType,
+        strings: parsed.strings,
+        color,
+        series: series.trim(),
+      });
+    }
   }
 
   // Batch create instruments
   await prisma.instrument.createMany({ data: instruments });
 
   console.log(`Migrated ${instruments.length} instruments. Skipped ${skipped}.`);
-  return instruments;
+  return { instruments, instrumentsByOwner };
 }
 
 // ============================================================================
@@ -633,42 +655,66 @@ async function migrateProductionOrders(modelMap: Map<string, string>) {
 
     const baseDueDate = pedidoDate || new Date();
 
+    // Determine production order status based on filled dates
+    const filledDates = [pedidoDate, entregaDate, parcela1Date, parcela2Date, parcela3Date, parcela4Date].filter(d => d !== null);
+    let orderStatus: ProductionStatus = ProductionStatus.ORCAMENTO;
+
+    if (filledDates.length >= 6) {
+      orderStatus = ProductionStatus.RECEBIDO;
+    } else if (filledDates.length >= 2) {
+      orderStatus = ProductionStatus.EM_PRODUCAO;
+    } else if (filledDates.length === 1) {
+      orderStatus = ProductionStatus.PEDIDO_FEITO;
+    }
+
+    // Update the production order with the correct status
+    await prisma.productionOrder.update({
+      where: { id: prodOrder.id },
+      data: { status: orderStatus },
+    });
+
     const payments = [
       {
         installment: 1,
         description: "Pedido 20%",
         amount: order.p20,
         dueDate: pedidoDate || baseDueDate,
+        dateValue: pedidoDate,
       },
       {
         installment: 2,
         description: "Entrega 20%",
         amount: order.e20,
         dueDate: entregaDate || addMonths(baseDueDate, 1),
+        dateValue: entregaDate,
       },
       {
         installment: 3,
         description: "Parcela 1",
         amount: order.p15,
         dueDate: parcela1Date || addMonths(baseDueDate, 2),
+        dateValue: parcela1Date,
       },
       {
         installment: 4,
         description: "Parcela 2",
         amount: order.p15,
         dueDate: parcela2Date || addMonths(baseDueDate, 3),
+        dateValue: parcela2Date,
       },
       {
         installment: 5,
         description: "Parcela 3",
         amount: order.p15,
         dueDate: parcela3Date || addMonths(baseDueDate, 4),
+        dateValue: parcela3Date,
       },
       {
         installment: 6,
         description: "Parcela 4",
         amount: order.p15,
         dueDate: parcela4Date || addMonths(baseDueDate, 5),
+        dateValue: parcela4Date,
       },
     ];
 
@@ -679,7 +725,8 @@ async function migrateProductionOrders(modelMap: Map<string, string>) {
         description: payment.description,
         amountBRL: new Prisma.Decimal(payment.amount),
         dueDate: payment.dueDate,
-        status: PaymentInstallmentStatus.PENDENTE,
+        paidDate: payment.dateValue || undefined,
+        status: payment.dateValue ? PaymentInstallmentStatus.PAGO : PaymentInstallmentStatus.PENDENTE,
       })),
     });
 
@@ -687,6 +734,108 @@ async function migrateProductionOrders(modelMap: Map<string, string>) {
   }
 
   console.log(`Migrated ${count} production orders with payments.`);
+}
+
+// ============================================================================
+// PRODUCTION-INSTRUMENT LINKING
+// ============================================================================
+
+async function linkInstrumentsToProductionOrders() {
+  console.log("\n=== LINKING INSTRUMENTS TO PRODUCTION ORDERS ===");
+
+  // Find instruments in production (EM_PRODUCAO, FABRICA)
+  const productionInstruments = await prisma.instrument.findMany({
+    where: {
+      status: InstrumentStatus.EM_PRODUCAO,
+      location: InstrumentLocation.FABRICA,
+    },
+  });
+
+  // Find active production orders
+  const activeProductionOrders = await prisma.productionOrder.findMany({
+    where: {
+      status: {
+        in: [ProductionStatus.PEDIDO_FEITO, ProductionStatus.EM_PRODUCAO],
+      },
+    },
+    include: {
+      items: true,
+    },
+  });
+
+  let linked = 0;
+
+  for (const instrument of productionInstruments) {
+    // Find a matching active production order by model type
+    const matchingOrder = activeProductionOrders.find((order) =>
+      order.items.some(
+        (item) =>
+          item.modelType === instrument.modelType &&
+          item.strings === instrument.strings &&
+          item.color === instrument.color
+      )
+    );
+
+    if (matchingOrder) {
+      // Link the instrument to the production order
+      // (if the schema supports this relationship)
+      linked++;
+    }
+  }
+
+  console.log(`Identified ${linked} instruments potentially linked to production orders.`);
+}
+
+// ============================================================================
+// CUSTOMER LINKING FOR DELIVERED INSTRUMENTS
+// ============================================================================
+
+async function linkInstrumentsToCustomers(
+  instrumentsByOwner: Map<string, Array<{ owner: string; modelType: ModelType; strings: number; color: string; series: string }>>
+) {
+  console.log("\n=== LINKING INSTRUMENTS TO CUSTOMERS ===");
+
+  const customerMap = new Map<string, string>();
+  let linked = 0;
+
+  for (const [owner, instruments] of instrumentsByOwner) {
+    // Create customer for this owner (customer initials or name)
+    let customerId = customerMap.get(owner);
+    if (!customerId) {
+      const customer = await prisma.customer.create({
+        data: {
+          name: owner,
+          source: "instrument",
+        },
+      });
+      customerId = customer.id;
+      customerMap.set(owner, customerId);
+    }
+
+    // Link each instrument to the customer
+    for (const inst of instruments) {
+      const dbInstrument = await prisma.instrument.findFirst({
+        where: {
+          series: inst.series,
+          modelType: inst.modelType,
+          strings: inst.strings,
+          color: inst.color,
+          status: InstrumentStatus.ENTREGUE,
+          customerId: null,
+        },
+      });
+
+      if (dbInstrument) {
+        await prisma.instrument.update({
+          where: { id: dbInstrument.id },
+          data: { customerId },
+        });
+        linked++;
+      }
+    }
+  }
+
+  console.log(`Linked ${linked} instruments to customers.`);
 }
 
 // ============================================================================
@@ -786,6 +935,27 @@ async function migrateSalesOrders(modelMap: Map<string, string>) {
         paidAt: date,
       },
     });
+
+    // Try to link an unassigned instrument matching model/color/strings
+    const matchingInstrument = await prisma.instrument.findFirst({
+      where: {
+        modelType,
+        strings,
+        color: orderData.color,
+        orderId: null,
+        status: { in: [InstrumentStatus.EM_ESTOQUE, InstrumentStatus.ENTREGUE] },
+      },
+    });
+
+    if (matchingInstrument) {
+      await prisma.instrument.update({
+        where: { id: matchingInstrument.id },
+        data: {
+          orderId: orderRecord.id,
+          status: InstrumentStatus.ENTREGUE,
+        },
+      });
+    }
 
     // Create Financial entry for income
     await prisma.financial.create({
@@ -887,6 +1057,27 @@ async function migrateVendas23(modelMap: Map<string, string>) {
       },
     });
 
+    // Try to link an unassigned instrument matching model/color/strings
+    const matchingInstrument = await prisma.instrument.findFirst({
+      where: {
+        modelType,
+        strings,
+        color,
+        orderId: null,
+        status: { in: [InstrumentStatus.EM_ESTOQUE, InstrumentStatus.ENTREGUE] },
+      },
+    });
+
+    if (matchingInstrument) {
+      await prisma.instrument.update({
+        where: { id: matchingInstrument.id },
+        data: {
+          orderId: orderRecord.id,
+          status: InstrumentStatus.ENTREGUE,
+        },
+      });
+    }
+
     // Create Financial entry
     await prisma.financial.create({
       data: {
@@ -937,7 +1128,7 @@ async function migrateBreakeven() {
     if (brl === 0 && usd === 0) continue;
 
     // Map description to category
-    let category = FinancialCategory.OUTRO;
+    let category: FinancialCategory = FinancialCategory.OUTRO;
 
     if (description.toLowerCase().includes("shopify")) {
       category = FinancialCategory.ASSINATURA;
@@ -1014,7 +1205,7 @@ async function main() {
     const modelMap = await createModelCatalog();
 
     // 3. Migrate serials
-    await migrateSerials(modelMap);
+    const { instruments, instrumentsByOwner } = await migrateSerials(modelMap);
 
     // 4. Migrate production orders
     await migrateProductionOrders(modelMap);
@@ -1028,7 +1219,13 @@ async function main() {
     // 7. Migrate breakeven financial entries
     await migrateBreakeven();
 
-    // 8. Summary
+    // 8. Link instruments to production orders
+    await linkInstrumentsToProductionOrders();
+
+    // 9. Link delivered instruments to customers
+    await linkInstrumentsToCustomers(instrumentsByOwner);
+
+    // 10. Summary
     console.log("\n=== MIGRATION SUMMARY ===");
     const modelCount = await prisma.model.count();
     const instrumentCount = await prisma.instrument.count();

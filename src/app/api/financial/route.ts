@@ -9,26 +9,50 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const period = searchParams.get('period') || 'month';
-    const dateStr = searchParams.get('date');
+    let dateStr = searchParams.get('date');
 
     let startDate: Date;
     let endDate: Date;
 
     const now = new Date();
 
-    if (dateStr) {
+    // If no date provided and current month, default to last 12 months summary
+    if (!dateStr) {
+      const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+      // Check if current month has any financial data
+      const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      const existingData = await prisma.financial.findFirst({
+        where: {
+          date: { gte: currentMonth, lte: currentMonthEnd },
+        },
+      });
+
+      // If no data in current month, show all-time or last 12 months
+      if (!existingData) {
+        // Show all-time data by using wide date range
+        startDate = new Date('2020-01-01');
+        endDate = new Date();
+        dateStr = 'all-time';
+      } else {
+        startDate = currentMonth;
+        dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      }
+    } else {
       const [year, month] = dateStr.split('-').map(Number);
       startDate = new Date(year, month - 1, 1);
-    } else {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
     }
 
-    if (period === 'month') {
-      endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0, 23, 59, 59);
-    } else if (period === 'quarter') {
-      endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 3, 0, 23, 59, 59);
+    if (dateStr !== 'all-time') {
+      if (period === 'month') {
+        endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0, 23, 59, 59);
+      } else if (period === 'quarter') {
+        endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 3, 0, 23, 59, 59);
+      } else {
+        endDate = new Date(startDate.getFullYear() + 1, startDate.getMonth(), 0, 23, 59, 59);
+      }
     } else {
-      endDate = new Date(startDate.getFullYear() + 1, startDate.getMonth(), 0, 23, 59, 59);
+      endDate = new Date();
     }
 
     // Get financials for period

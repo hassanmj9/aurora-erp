@@ -10,6 +10,7 @@ export async function GET(request: NextRequest) {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    const last30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const threeHoursAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
 
     // Count instruments in stock
@@ -24,7 +25,10 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // Revenue this month (USD)
+    // Revenue: Show last 30 days or all-time if current month is empty
+    let revenueThisMonth = new Decimal(0);
+
+    // First try current month
     const monthlyOrders = await prisma.order.findMany({
       where: {
         date: { gte: monthStart, lte: monthEnd },
@@ -32,51 +36,94 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    let revenueThisMonth = new Decimal(0);
     for (const order of monthlyOrders) {
       revenueThisMonth = revenueThisMonth.plus(order.total || 0);
     }
 
-    // Pending shipments
+    // If current month has no revenue, show last 30 days
+    if (revenueThisMonth.isZero()) {
+      const last30DaysOrders = await prisma.order.findMany({
+        where: {
+          date: { gte: last30Days },
+          status: { in: [OrderStatus.PAGO, OrderStatus.ENVIADO, OrderStatus.ENTREGUE] },
+        },
+      });
+
+      for (const order of last30DaysOrders) {
+        revenueThisMonth = revenueThisMonth.plus(order.total || 0);
+      }
+    }
+
+    // Pending shipments: Only PREPARANDO and ENVIADO (not PAGO)
     const pendingShipments = await prisma.order.count({
       where: {
-        status: { in: [OrderStatus.PREPARANDO, OrderStatus.PAGO] },
+        status: { in: [OrderStatus.PREPARANDO, OrderStatus.ENVIADO] },
       },
     });
 
     // Action items
     const actionItems = [];
 
-    // 1. Overdue production payments
+    // 1. Overdue production payments (grouped by order, excluding old orders from 2024)
     const overduePayments = await prisma.productionPayment.findMany({
       where: {
         status: 'PENDENTE',
         dueDate: { lt: now },
+        productionOrder: {
+          createdAt: {
+            gte: new Date('2024-01-01'), // Only 2024 and later
+          },
+        },
       },
       include: {
-        productionOrder: { select: { code: true } },
+        productionOrder: { select: { code: true, createdAt: true } },
       },
+      orderBy: { dueDate: 'desc' },
     });
 
+    // Group by production order and count
+    const groupedOverduePayments = new Map<string, { code: string; count: number; dueDate: Date }>();
     for (const payment of overduePayments) {
+      if (!groupedOverduePayments.has(payment.productionOrderId)) {
+        groupedOverduePayments.set(payment.productionOrderId, {
+          code: payment.productionOrder.code,
+          count: 0,
+          dueDate: payment.dueDate,
+        });
+      }
+      const entry = groupedOverduePayments.get(payment.productionOrderId)!;
+      entry.count++;
+    }
+
+    // Add to action items (max 10)
+    let overdueCount = 0;
+    for (const [, entry] of groupedOverduePayments) {
+      if (overdueCount >= 10) break;
+      const message = entry.count === 1
+        ? `Pagamento vencido para produção ${entry.code}`
+        : `${entry.count} pagamentos vencidos para produção ${entry.code}`;
       actionItems.push({
         type: 'overdue_payment',
         severity: 'high',
-        message: `Pagamento vencido para produção ${payment.productionOrder.code}`,
-        dueDate: payment.dueDate,
+        message,
+        dueDate: entry.dueDate,
       });
+      overdueCount++;
     }
 
-    // 2. Orders awaiting payment for > 3 days
+    // 2. Orders awaiting payment for > 3 days (limit to 5 most recent)
     const awaitingPaymentOrders = await prisma.order.findMany({
       where: {
         status: OrderStatus.AGUARDANDO_PAGTO,
         date: { lte: threeHoursAgo },
       },
       select: { id: true, orderNumber: true, date: true },
+      orderBy: { date: 'desc' },
+      take: 5,
     });
 
     for (const order of awaitingPaymentOrders) {
+      if (actionItems.length >= 10) break;
       actionItems.push({
         type: 'awaiting_payment',
         severity: 'medium',
@@ -85,18 +132,18 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 3. Pending shipments (orders PAGO but not ENVIADO)
-    const unsentOrders = await prisma.order.findMany({
+    // 3. Orders ready for shipment (PREPARANDO status, not yet ENVIADO)
+    const readyForShipment = await prisma.order.findMany({
       where: {
-        status: OrderStatus.PAGO,
-        shipments: {
-          none: {},
-        },
+        status: OrderStatus.PREPARANDO,
       },
       select: { id: true, orderNumber: true },
+      orderBy: { date: 'desc' },
+      take: 5,
     });
 
-    for (const order of unsentOrders) {
+    for (const order of readyForShipment) {
+      if (actionItems.length >= 10) break;
       actionItems.push({
         type: 'pending_shipment',
         severity: 'medium',
@@ -104,8 +151,8 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 4. Low stock alerts
-    if (instrumentsInStock < 5) {
+    // 4. Low stock alerts (only if very low)
+    if (instrumentsInStock < 5 && actionItems.length < 10) {
       actionItems.push({
         type: 'low_stock',
         severity: 'medium',
