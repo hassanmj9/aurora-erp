@@ -41,6 +41,51 @@ const COLORS = [
   "Sapphire",
 ];
 
+function formatDateISO(date: Date): string {
+  return date.toISOString().split("T")[0];
+}
+
+function buildPaymentSchedule(total: number, deliveryDate: Date): PaymentSchedule[] {
+  const today = new Date();
+  const schedule: PaymentSchedule[] = [];
+
+  schedule.push({
+    installment: 1,
+    description: "20% Pedido",
+    percentage: 20,
+    amount: total * 0.2,
+    dueDate: formatDateISO(today),
+  });
+
+  schedule.push({
+    installment: 2,
+    description: "20% Entrega",
+    percentage: 20,
+    amount: total * 0.2,
+    dueDate: formatDateISO(deliveryDate),
+  });
+
+  const firstParcelaDate = new Date(deliveryDate);
+  if (deliveryDate.getDate() >= 10) {
+    firstParcelaDate.setMonth(firstParcelaDate.getMonth() + 1);
+  }
+  firstParcelaDate.setDate(10);
+
+  for (let i = 0; i < 4; i++) {
+    const parcelaDate = new Date(firstParcelaDate);
+    parcelaDate.setMonth(parcelaDate.getMonth() + i);
+    schedule.push({
+      installment: 3 + i,
+      description: `Parcela ${i + 1}/4`,
+      percentage: 15,
+      amount: total * 0.15,
+      dueDate: formatDateISO(parcelaDate),
+    });
+  }
+
+  return schedule;
+}
+
 export default function NovoProducaoPage() {
   const [items, setItems] = useState<ProductionItem[]>([
     {
@@ -57,71 +102,14 @@ export default function NovoProducaoPage() {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Calculate totals
   const totalCost = items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
 
-  // Payment schedule: 20% order, 20% delivery, 4×15%
-  const paymentSchedule: PaymentSchedule[] = calculatePaymentSchedule(totalCost);
-
-  // Estimated delivery: today + 60 days for violins, +90 days if any CELLO
   const hasCello = items.some((item) => item.modelType === "CELLO");
   const estimatedDeliveryDays = hasCello ? 90 : 60;
   const estimatedDelivery = new Date();
   estimatedDelivery.setDate(estimatedDelivery.getDate() + estimatedDeliveryDays);
 
-  function calculatePaymentSchedule(total: number): PaymentSchedule[] {
-    const today = new Date();
-    const schedule: PaymentSchedule[] = [];
-
-    // 20% - Pedido (today)
-    schedule.push({
-      installment: 1,
-      description: "20% Pedido",
-      percentage: 20,
-      amount: total * 0.2,
-      dueDate: formatDateISO(today),
-    });
-
-    // 20% - Entrega (estimated delivery date)
-    schedule.push({
-      installment: 2,
-      description: "20% Entrega",
-      percentage: 20,
-      amount: total * 0.2,
-      dueDate: formatDateISO(estimatedDelivery),
-    });
-
-    // 4×15% - Parcelas 1-4 (day 10 of following months)
-    // Rule: if delivery is before day 10, first parcela is same month; if after day 10, first parcela is next month
-    let firstParcelaDate = new Date(estimatedDelivery);
-
-    if (estimatedDelivery.getDate() >= 10) {
-      // Move to next month
-      firstParcelaDate.setMonth(firstParcelaDate.getMonth() + 1);
-    }
-
-    // Set to day 10
-    firstParcelaDate.setDate(10);
-
-    for (let i = 0; i < 4; i++) {
-      const parcelaDate = new Date(firstParcelaDate);
-      parcelaDate.setMonth(parcelaDate.getMonth() + i);
-
-      schedule.push({
-        installment: 3 + i,
-        description: `Parcela ${i + 1}/4`,
-        percentage: 15,
-        amount: total * 0.15,
-        dueDate: formatDateISO(parcelaDate),
-      });
-    }
-
-    return schedule;
-  }
-
-  function formatDateISO(date: Date): string {
-    return date.toISOString().split("T")[0];
-  }
+  const paymentSchedule = buildPaymentSchedule(totalCost, estimatedDelivery);
 
   function addItem() {
     const newItem: ProductionItem = {
