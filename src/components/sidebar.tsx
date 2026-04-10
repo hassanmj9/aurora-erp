@@ -10,6 +10,7 @@ import {
   Truck,
   Factory,
   DollarSign,
+  Store,
   Menu,
   X,
 } from "lucide-react";
@@ -45,6 +46,11 @@ const navItems = [
     label: "Financeiro",
     href: "/financeiro",
     icon: DollarSign,
+  },
+  {
+    label: "Shopify",
+    href: "/shopify",
+    icon: Store,
   },
 ];
 
